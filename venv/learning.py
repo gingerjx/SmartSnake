@@ -1,4 +1,5 @@
 import random
+import snake
 
 class State:
   def __init__(self, center, obstacles, reward, free_cells):
@@ -21,12 +22,19 @@ class State:
     return obstacles_value + reward_value
 
 class Mdp:
-  def __init__(self, board_size, cells, snake, fruit_coords):
+  def __init__(self, board_size):
     self.board_size = board_size
-    self.cells = cells
-    self.snake = snake
-    self.fruit_coords = fruit_coords
+    self.cells = [["." for j in range(self.board_size[1])]
+                           for i in range(self.board_size[0])]
+    head_coords = (self.board_size[0] // 2, self.board_size[1] // 2)
+    self.cells[head_coords[0]][head_coords[1]] = "S"
+    self.cells[head_coords[0] - 1][head_coords[1]] = "S"
+    self.fruit_coords = (0, 0)  # need to have some initial value to use 'rand_fruit_coords'
+    self.fruit_coords = self.rand_fruit_coords()
+
+    self.snake = snake.Snake(head_coords, self.board_size)
     self.actions = {"Right": (0, 1), "Left": (0, -1), "Down": (1, 0), "Up": (-1, 0)}
+    self.directions = {(0, 1): "Right", (0, -1): "Left", (1, 0): "Down", (-1, 0): "Up"}
 
   def valid_coords(self, coords):
     (x, y) = coords
@@ -39,7 +47,7 @@ class Mdp:
     for action in self.actions:
       (dir_x, dir_y) = self.actions[action]
       next_coords = (x + dir_x, y + dir_y)
-      if not self.valid_coords(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "Snake":
+      if not self.valid_coords(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "S":
         obstacles[action] = True
       else:
         obstacles[action] = False
@@ -71,12 +79,12 @@ class Mdp:
       for i in range(side):
         if i + corner[0] >= self.board_size[0]:
           continue
-        free_cells[direction] -= self.cells[corner[0]+i][corner[1]:corner[1]+side].count("Snake")
+        free_cells[direction] -= self.cells[corner[0]+i][corner[1]:corner[1]+side].count("S")
       free_cells[direction] /= side**2
     return free_cells
 
   def is_goal(self, state):
-    return  state.center == self.fruit_coords
+    return state.center == self.fruit_coords
 
   def is_terminal(self, state):
     return self.snake.check_crash(state.center) or not self.valid_coords(state.center)
@@ -84,8 +92,7 @@ class Mdp:
   def possible_actions(self, state):
     if self.is_terminal(state):
       return None
-    forbidden_action = self.actions.keys()[self.actions.values().index(self.snake.backward_move())]
-    print(forbidden_action)
+    forbidden_action = self.directions[self.snake.backward_move()]
     actions_list = ["Right", "Left", "Down", "Up"]
     actions_list.remove(forbidden_action)
     return actions_list
@@ -106,8 +113,30 @@ class Mdp:
       return 0.5
     return state.action_value(action)
 
+  def rand_fruit_coords(self):
+    empty_cells = []
+    for i in range(self.board_size[0]):
+      for j in range(self.board_size[1]):
+        if self.cells[i][j] == ".":
+          empty_cells.append((i, j))
+    new_coords = empty_cells[random.randint(0, len(empty_cells)-1)]
+    self.cells[self.fruit_coords[0]][self.fruit_coords[1]] = "."
+    self.cells[new_coords[1]][new_coords[0]] = "F"
+    return new_coords
+
+  def reset_mdp(self):
+    self.cells = [["." for j in range(self.board_size[1])]
+                       for i in range(self.board_size[0])]
+    head_coords = (self.board_size[0] // 2, self.board_size[1] // 2)
+    self.cells[head_coords[0]][head_coords[1]] = "S"
+    self.cells[head_coords[0] - 1][head_coords[1]] = "S"
+    self.fruit_coords = (0, 0)  # need to have some initial value to use 'rand_fruit_coords'
+    self.fruit_coords = self.rand_fruit_coords()
+    self.snake.reset(head_coords)
+    return self.create_state(head_coords)
+
 class RLearning:
-  def __init__(self, mdp, train=True, gamma=0.9, alpha=1.0, epsilon=0.8, episodes=10):
+  def __init__(self, mdp, train=True, gamma=0.9, alpha=1.0, epsilon=0.0, episodes=10):
     self.mdp = mdp
     self.train = train
     self.gamma = gamma
@@ -119,15 +148,18 @@ class RLearning:
     self.q_table = {}
 
   def q_value(self, state, action):
-    if state not in self.q_table or action not in self.q_table[state]:
+    if state not in self.q_table:
+      self.q_table[state] = {}
       self.q_table[state][action] = self.mdp.reward(state, action)
-    return self.q_table[state]
+    elif action not in self.q_table[state]:
+      self.q_table[state][action] = self.mdp.reward(state, action)
+    return self.q_table[state][action]
 
   def max_q_value(self, state):
     possible_actions = self.mdp.possible_actions(state)
     if possible_actions is None:
       return -1.0
-    max = self.q_value("Right", action)
+    max = self.q_value(state, "Right")
     for action in self.mdp.actions:
       q_val = self.q_value(state, action)
       if q_val > max:
@@ -140,8 +172,9 @@ class RLearning:
       return None
 
     probability = random.randint(0, 100)
-    if train and epsilon*100 > probability:
-      actions = list(self.mdp.actions.keys()).remove(self.mdp.snake.backward_move())
+    if self.train and self.epsilon*100 > probability:
+      actions = list(self.mdp.actions.keys())
+      actions.remove(self.mdp.directions[self.mdp.snake.backward_move()])
       return random.choice(actions)
 
     max = self.max_q_value(state)
@@ -153,7 +186,7 @@ class RLearning:
     return random.choice(best_actions)
 
   def step(self, state):
-    action = best_action(state)
+    action = self.best_action(state)
     next_state = self.mdp.next_state(state, action)
 
     next_q_max = self.max_q_value(next_state)
@@ -161,8 +194,6 @@ class RLearning:
     q_val = self.q_value(state, action)
     q_val += self.alpha * (reward + self.gamma * next_q_max - q_val)
     self.q_table[state][action] = q_val
-    if self.mdp.is_terminal(next_state):
-      state = next_state
-      return None
 
-    return action
+    return (next_state, action)
+
