@@ -2,43 +2,56 @@ import random
 import snake
 
 class State:
-  def __init__(self, center, obstacles, reward, free_cells):
+  def __init__(self, center, obstacles, reward, walls_dist, body_dist):
     self.center = center          # tuple contains head position
     self.obstacles = obstacles    # dictionary contains information about obstacles presence in every four sides
     self.reward = reward          # dictionary contains information about reward presence in every four sides
-    self.free_cells = free_cells  # dictionary contains information about percent of free cells in every four sides
+    self.walls_dist = walls_dist  # dictionary contains information about distance to wall in every four sides
+    self.body_dist = body_dist    # dictionary contains information about distance to body in every four sides
 
   def equals(self, state):
-    return  self.center == state.center and\
-            self.obstacles == state.obstacles and\
-            self.reward == state.reward and \
-            self.free_cells == state.free_cells
-
+    return self.center == state.center and\
+           self.obstacles == state.obstacles and\
+           self.reward == state.reward and \
+           self.free_cells == state.free_cells
   # temporary function
   def action_value(self, action):
     obstacles_value = -1.0 if self.obstacles[action] else 0.0
     reward_value = 0.2 if self.reward[action] else 0.0
-    # missing free cels
-    return obstacles_value + reward_value
+    walls_dist_value = self.walls_dist[action]/10
+    body_dist_value = self.body_dist[action]/10
+    return (obstacles_value + reward_value + walls_dist_value + body_dist_value)/4
 
 class Mdp:
   def __init__(self, board_size):
     self.board_size = board_size
     self.cells = [["." for j in range(self.board_size[1])]
-                           for i in range(self.board_size[0])]
+                       for i in range(self.board_size[0])]
     head_coords = (self.board_size[0] // 2, self.board_size[1] // 2)
-    self.cells[head_coords[0]][head_coords[1]] = "S"
-    self.cells[head_coords[0] - 1][head_coords[1]] = "S"
-    self.fruit_coords = (0, 0)  # need to have some initial value to use 'rand_fruit_coords'
+    init_coords = (head_coords, (head_coords[0], head_coords[1] + 1))
+    self.cells[init_coords[0][0]][init_coords[0][1]] = "S"
+    self.cells[init_coords[1][0]][init_coords[1][1]] = "S"
+    self.snake = snake.Snake(init_coords, board_size)
+    self.fruit_coords = (0, 0)  # need to init for 'rand_fruit_coords()' function
     self.fruit_coords = self.rand_fruit_coords()
-
-    self.snake = snake.Snake(head_coords, self.board_size)
     self.actions = {"Right": (0, 1), "Left": (0, -1), "Down": (1, 0), "Up": (-1, 0)}
     self.directions = {(0, 1): "Right", (0, -1): "Left", (1, 0): "Down", (-1, 0): "Up"}
 
-  def valid_coords(self, coords):
+  def out_of_board(self, coords):
     (x, y) = coords
-    return (x >= 0 and x < self.board_size[0]) and (y >= 0 and y < self.board_size[1])
+    return x < 0 or x >= self.board_size[0] or y < 0 or y >= self.board_size[1]
+
+  def rand_fruit_coords(self):
+    empty_cells = []
+    for i in range(self.board_size[0]):
+      for j in range(self.board_size[1]):
+        if self.cells[i][j] == ".":
+          empty_cells.append((i, j))
+    new_coords = random.choice(empty_cells)
+    self.cells[self.fruit_coords[0]][self.fruit_coords[1]] = "."
+    self.cells[new_coords[0]][new_coords[1]] = "F"
+    self.fruit_coords = new_coords
+    return new_coords
 
   def create_state(self, coords):
     (x, y) = coords
@@ -47,7 +60,7 @@ class Mdp:
     for action in self.actions:
       (dir_x, dir_y) = self.actions[action]
       next_coords = (x + dir_x, y + dir_y)
-      if not self.valid_coords(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "S":
+      if self.out_of_board(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "S":
         obstacles[action] = True
       else:
         obstacles[action] = False
@@ -59,41 +72,51 @@ class Mdp:
     reward["Down"] = True if x < fruit_x else False
     reward["Up"] = True if x > fruit_x else False
 
-    free_cells = self.free_cells(coords)
-    return State(coords, obstacles, reward, free_cells)
+    wall_distance = self.wall_distance(coords)
+    body_distance = self.body_distance(coords)
+    return State(coords, obstacles, reward, wall_distance, body_distance)
 
-  def free_cells(self, coords):
-    # returns empty_cells/square_area ratio for each direction (free means fruit and empty cells)
+  def wall_distance(self, coords):
     (x, y) = coords
-    side = 7    # square side
-    shift = side // 2
-    free_cells = {"Right": side**2, "Left": side**2, "Down": side**2, "Up": side**2}
-    # left top corner of each square
-    square_corners = {"Right": [x-shift, y+1], "Left": [x-shift, y-side], "Down": [x+1, y-shift], "Up": [x-side, y-shift]}
-    for direction in square_corners:
-      corner = square_corners[direction]
-      if corner[0] < 0: corner[0] = 0
-      elif corner[0] >= self.board_size[0]: corner[0] = self.board_size[0]
-      if corner[1] < 0: corner[1] = 0
-      elif corner[1] >= self.board_size[1]: corner[1] = self.board_size[1]
-      for i in range(side):
-        if i + corner[0] >= self.board_size[0]:
-          continue
-        free_cells[direction] -= self.cells[corner[0]+i][corner[1]:corner[1]+side].count("S")
-      free_cells[direction] /= side**2
-    return free_cells
+    (size, _) = self.board_size
+    distance = {}
+    distance["Left"] = y/size
+    distance["Right"] = (size - y - 1)/size
+    distance["Up"] = x/size
+    distance["Down"] = (size - x - 1)/size
+    return distance
+
+  def body_distance(self, coords):
+    (center_x, center_y) = coords
+    (size, _) = self.board_size
+    distance = {}
+    for action in self.actions:
+      (dir_x, dir_y) = self.actions[action]
+      x, y = center_x, center_y
+      distance[action] = 0
+      while True:
+        x += dir_x
+        y += dir_y
+        if self.out_of_board((x, y)):
+          break
+        if self.snake.crush((x, y)):
+          break
+        distance[action] += 1
+      distance[action] /= size
+
+    return distance
 
   def is_goal(self, state):
     return state.center == self.fruit_coords
 
   def is_terminal(self, state):
-    return self.snake.check_crash(state.center) or not self.valid_coords(state.center)
+    return self.snake.crush(state.center) or self.out_of_board(state.center)
 
   def possible_actions(self, state):
     if self.is_terminal(state):
       return None
+    actions_list = list(self.actions.keys())
     forbidden_action = self.directions[self.snake.backward_move()]
-    actions_list = ["Right", "Left", "Down", "Up"]
     actions_list.remove(forbidden_action)
     return actions_list
 
@@ -113,38 +136,29 @@ class Mdp:
       return 0.5
     return state.action_value(action)
 
-  def rand_fruit_coords(self):
-    empty_cells = []
-    for i in range(self.board_size[0]):
-      for j in range(self.board_size[1]):
-        if self.cells[i][j] == ".":
-          empty_cells.append((i, j))
-    new_coords = empty_cells[random.randint(0, len(empty_cells)-1)]
-    self.cells[self.fruit_coords[0]][self.fruit_coords[1]] = "."
-    self.cells[new_coords[1]][new_coords[0]] = "F"
-    return new_coords
-
-  def reset_mdp(self):
+  def reset(self):
     self.cells = [["." for j in range(self.board_size[1])]
-                       for i in range(self.board_size[0])]
+                  for i in range(self.board_size[0])]
     head_coords = (self.board_size[0] // 2, self.board_size[1] // 2)
-    self.cells[head_coords[0]][head_coords[1]] = "S"
-    self.cells[head_coords[0] - 1][head_coords[1]] = "S"
-    self.fruit_coords = (0, 0)  # need to have some initial value to use 'rand_fruit_coords'
+    init_coords = (head_coords, (head_coords[0], head_coords[1] + 1))
+    self.cells[init_coords[0][0]][init_coords[0][1]] = "S"
+    self.cells[init_coords[1][0]][init_coords[1][1]] = "S"
+    self.snake.reset(init_coords)
+    self.fruit_coords = (0, 0)  # need to init for 'rand_fruit_coords()' function
     self.fruit_coords = self.rand_fruit_coords()
-    self.snake.reset(head_coords)
-    return self.create_state(head_coords)
 
 class RLearning:
-  def __init__(self, mdp, train=True, gamma=0.9, alpha=1.0, epsilon=0.0, episodes=10):
+  def __init__(self, mdp, train=True, gamma=0.9, alpha=1.0, epsilon=0.8, episodes=25, max_steps=100):
     self.mdp = mdp
+    self.state = self.mdp.create_state(self.mdp.snake.body[0])
     self.train = train
     self.gamma = gamma
     self.alpha = alpha
     self.epsilon = epsilon
     self.episodes = episodes
+    self.max_steps = max_steps
 
-    self.epsilon_delta = 1/episodes
+    self.epsilon_delta = self.epsilon/episodes
     self.q_table = {}
 
   def q_value(self, state, action):
@@ -162,8 +176,7 @@ class RLearning:
     max = self.q_value(state, "Right")
     for action in self.mdp.actions:
       q_val = self.q_value(state, action)
-      if q_val > max:
-        max = q_val
+      max = q_val if q_val > max else max
     return max
 
   def best_action(self, state):
@@ -180,20 +193,20 @@ class RLearning:
     max = self.max_q_value(state)
     best_actions = []
     for action in self.mdp.actions:
-      q_val = self.q_value(state, action)
-      if q_val == max:
+      if self.q_value(state, action) == max:
         best_actions.append(action)
     return random.choice(best_actions)
 
-  def step(self, state):
-    action = self.best_action(state)
-    next_state = self.mdp.next_state(state, action)
+  def step(self):
+    action = self.best_action(self.state)
+    next_state = self.mdp.next_state(self.state, action)
 
     next_q_max = self.max_q_value(next_state)
-    reward = self.mdp.reward(state, action)
-    q_val = self.q_value(state, action)
+    reward = self.mdp.reward(self.state, action)
+    q_val = self.q_value(self.state, action)
     q_val += self.alpha * (reward + self.gamma * next_q_max - q_val)
-    self.q_table[state][action] = q_val
+    self.q_table[self.state][action] = q_val
 
-    return (next_state, action)
-
+    self.state = next_state
+    self.mdp.snake.direction = self.mdp.actions[action]
+    return (self.state, action)
