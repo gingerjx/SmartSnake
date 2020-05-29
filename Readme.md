@@ -18,7 +18,7 @@ In the future...
 
 **Done**
 
-For now snake game is ready with all GUI components. Snake's moves are controlled by Reinforcement Learning mechanisms. QLearning is used to learn snake how to score the highest number of fruits and actions are chosen by QTable values.
+For now snake game is ready with all GUI components. Snake's moves are controlled by Reinforcement Learning mechanisms. Double QLearning is used to learn snake how to score the highest number of fruits and actions are chosen by QTable values. I hoped that this version will work better than QLearning, but I'm wrong or my implementation.
 
 **TODO**
 
