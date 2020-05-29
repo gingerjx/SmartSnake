@@ -21,7 +21,7 @@ class Game:
 
     self.game_running = True
     self.mdp = learning.Mdp(self.board_size)
-    self.rl = learning.RLearning(self.mdp, episodes=100)
+    self.rl = learning.RLearning(self.mdp, episodes=250)
     self.episode = 0
 
     pygame.display.init()
@@ -74,8 +74,8 @@ class Game:
 
   def handle_terminal(self, steps):
     if self.mdp.is_terminal(self.rl.state) or steps >= self.rl.max_steps:
-      print("Ep", str(self.episode) + ".  ", steps, "/", self.rl.max_steps, "steps   score",
-            self.mdp.snake.eaten_fruits, "  epsilon", self.rl.epsilon)
+      print(f"Ep {self.episode}.    {steps}/{self.rl.max_steps} steps    "
+            f"score {self.mdp.snake.eaten_fruits}    epsilon {self.rl.epsilon:.3}")
       self.episode += 1
       self.rl.epsilon -= self.rl.epsilon_delta
       self.rl.epsilon = self.rl.epsilon if self.rl.epsilon > 0.0 else 0.0

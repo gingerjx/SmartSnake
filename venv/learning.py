@@ -159,27 +159,62 @@ class RLearning:
     self.max_steps = max_steps
 
     self.epsilon_delta = self.epsilon/episodes
-    self.q_table = {}
+    self.q_table = [{}, {}]    # two tables for Double QLearning
 
-  def q_value(self, state, action):
-    if state not in self.q_table:
-      self.q_table[state] = {}
-      self.q_table[state][action] = self.mdp.reward(state, action)
-    elif action not in self.q_table[state]:
-      self.q_table[state][action] = self.mdp.reward(state, action)
-    return self.q_table[state][action]
+  def q_value(self, state, action, tab_num):
+    # return value from q_table for table 0 or 1 ('tab_num'), if it doesn't exist assign reward to it
+    if state not in self.q_table[tab_num]:
+      self.q_table[tab_num][state] = {}
+      self.q_table[tab_num][state][action] = self.mdp.reward(state, action)
+    elif action not in self.q_table[tab_num][state]:
+      self.q_table[tab_num][state][action] = self.mdp.reward(state, action)
+    return self.q_table[tab_num][state][action]
+  def double_q_value(self, state, action):
+    # return sum of values from q_table 0 and 1
+    return self.q_value(state, action, 0) + self.q_value(state, action, 1)
 
-  def max_q_value(self, state):
+  def max_q_value(self, state, tab_num):
+    # return max value from table 0 or 1 ('tab_num')
     possible_actions = self.mdp.possible_actions(state)
     if possible_actions is None:
       return -1.0
-    max = self.q_value(state, "Right")
+    max = self.q_value(state, "Right", tab_num)
     for action in self.mdp.actions:
-      q_val = self.q_value(state, action)
+      q_val = self.q_value(state, action, tab_num)
+      max = q_val if q_val > max else max
+    return max
+  def double_max_q_value(self, state):
+    # return max value from sum of tables 0 and 1
+    possible_actions = self.mdp.possible_actions(state)
+    if possible_actions is None:
+      return -1.0
+    max = self.double_q_value(state, "Right")
+    for action in self.mdp.actions:
+      q_val = self.double_q_value(state, action)
       max = q_val if q_val > max else max
     return max
 
+  def argmax_q_value(self, state, tab_num):
+    # return max action from table 0 or 1 ('tab_num')
+    max = self.max_q_value(state, tab_num)
+    best_actions = []
+    for action in self.mdp.actions:
+      if self.q_value(state, action, tab_num) == max:
+        best_actions.append(action)
+    return random.choice(best_actions)
+  def double_argmax_q_value(self, state):
+    # return max action from sum of tables 0 and 1
+    max = self.double_max_q_value(state)
+    best_actions = []
+    for action in self.mdp.actions:
+      if self.double_q_value(state, action) == max:
+        best_actions.append(action)
+    return random.choice(best_actions)
+
   def best_action(self, state):
+    # if state is terminal return None
+    # sometimes return random action (depends on epsilon)
+    # otherwise return action based on max value from both tables
     possbile_actions = self.mdp.possible_actions(state)
     if possbile_actions is None:
       return None
@@ -190,23 +225,24 @@ class RLearning:
       actions.remove(self.mdp.directions[self.mdp.snake.backward_move()])
       return random.choice(actions)
 
-    max = self.max_q_value(state)
-    best_actions = []
-    for action in self.mdp.actions:
-      if self.q_value(state, action) == max:
-        best_actions.append(action)
-    return random.choice(best_actions)
+    return self.double_argmax_q_value(state)
 
   def step(self):
+    # Choose best action, update q_table 0 or 1, return new state and taken action
     action = self.best_action(self.state)
     next_state = self.mdp.next_state(self.state, action)
 
-    next_q_max = self.max_q_value(next_state)
-    reward = self.mdp.reward(self.state, action)
-    q_val = self.q_value(self.state, action)
-    q_val += self.alpha * (reward + self.gamma * next_q_max - q_val)
-    self.q_table[self.state][action] = q_val
+    self.update(next_state, action)
 
     self.state = next_state
     self.mdp.snake.direction = self.mdp.actions[action]
     return (self.state, action)
+
+  def update(self, next_state, action):
+    reward = self.mdp.reward(self.state, action)
+    tab_num = 1 if random.randint(0, 100) > 50 else 0  # 50% for 0 and 50% for q_table 1
+    max_action = self.argmax_q_value(next_state, tab_num)
+    next_q_val = self.q_value(next_state, max_action, 1-tab_num)
+    q_val = self.q_value(self.state, action, tab_num)
+    q_val += self.alpha * (reward + self.gamma * next_q_val - q_val)
+    self.q_table[tab_num][self.state][action] = q_val

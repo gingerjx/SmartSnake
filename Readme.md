@@ -12,7 +12,7 @@ Python 3.6, pygame 1.9.6
 
 ## About rl
 
-In future...
+In the future...
 
 ## Done & TODO
 
