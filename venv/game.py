@@ -21,7 +21,7 @@ class Game:
 
     self.game_running = True
     self.mdp = learning.Mdp(self.board_size)
-    self.rl = learning.RLearning(self.mdp, episodes=250)
+    self.rl = learning.RLearning(self.mdp, episodes=1000)
     self.episode = 0
 
     pygame.display.init()
@@ -76,10 +76,21 @@ class Game:
     if self.mdp.is_terminal(self.rl.state) or steps >= self.rl.max_steps:
       print(f"Ep {self.episode}.    {steps}/{self.rl.max_steps} steps    "
             f"score {self.mdp.snake.eaten_fruits}    epsilon {self.rl.epsilon:.3}")
+      print(f"Weights::  O {self.rl.weights[0]:.3} | R {self.rl.weights[1]:.3} "
+            f"| G {self.rl.weights[2]:.3} | W {self.rl.weights[3]:.3}")
+
       self.episode += 1
       self.rl.epsilon -= self.rl.epsilon_delta
       self.rl.epsilon = self.rl.epsilon if self.rl.epsilon > 0.0 else 0.0
-      if self.episode > self.rl.episodes:
+
+      # if training completely failed
+      if self.episode == self.rl.episodes and self.mdp.snake.eaten_fruits < 5:
+        print("\nRepeat learning\n")
+        self.rl.reset_rl(self.episode)
+        self.episode = 0
+        self.reset()
+        return "next_episode"
+      elif self.episode > self.rl.episodes:
         self.game_running = False
         return "game_over"
       else:

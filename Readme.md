@@ -18,8 +18,8 @@ In the future...
 
 **Done**
 
-For now snake game is ready with all GUI components. Snake's moves are controlled by Reinforcement Learning mechanisms. Double QLearning is used to learn snake how to score the highest number of fruits and actions are chosen by QTable values. I hoped that this version will work better than QLearning, but I'm wrong or my implementation.
+For now snake game is ready with all GUI components. Snake's moves are controlled by Reinforcement Learning mechanisms. Function Approximation is used to estimate state value. State consists of four features. These features and corresponding weights are used to calculation of state value. Snake is learning by adjusting these weights. Using weights is instead of QTable, decrease memory usage, but increase learning time.
 
 **TODO**
 
-There is few things to improve snake's learning. Firstly I will implement Function Approximation, for less memory usage. Later I will work on Deep QLearning approach.
+Deep QLearning.
