@@ -2,8 +2,9 @@ import random
 import snake
 
 class State:
-  def __init__(self, center, obstacles, reward, goal, walls_dist):
+  def __init__(self, center, direction, obstacles, reward, goal, walls_dist):
     self.center = center          # tuple contains head position
+    self.direction = direction    # tuple contatins information about move direction
     self.obstacles = obstacles    # dictionary contains information about obstacles presence in every four sides
     self.reward = reward          # dictionary contains information about reward presence in every four sides
     self.goal = goal              # boolean contatins information about if state is a goal state
@@ -14,8 +15,7 @@ class State:
     reward_value = 0.1 if self.reward[action] else 0.0
     goal_value = 1.0 if self.goal else 0.0
     walls_dist_value = self.walls_dist[action]
-    return {0: obstacles_value, 1: reward_value, 2: goal_value,
-            3: walls_dist_value}
+    return {0: obstacles_value, 1: reward_value, 2: goal_value, 3: walls_dist_value}
 
 class Mdp:
   def __init__(self, board_size):
@@ -48,17 +48,17 @@ class Mdp:
     self.fruit_coords = new_coords
     return new_coords
 
-  def create_state(self, coords):
+  def create_state(self, coords, action):
     (x, y) = coords
 
     obstacles = {}
-    for action in self.actions:
-      (dir_x, dir_y) = self.actions[action]
+    for act in self.actions:
+      (dir_x, dir_y) = self.actions[act]
       next_coords = (x + dir_x, y + dir_y)
       if self.out_of_board(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "S":
-        obstacles[action] = True
+        obstacles[act] = True
       else:
-        obstacles[action] = False
+        obstacles[act] = False
 
     reward = {}
     (fruit_x, fruit_y) = self.fruit_coords
@@ -67,10 +67,9 @@ class Mdp:
     reward["Down"] = True if x < fruit_x else False
     reward["Up"] = True if x > fruit_x else False
 
-    goal = fruit_x == x and fruit_y == y
-
+    goal = (fruit_x == x and fruit_y == y)
     wall_distance = self.wall_distance(coords)
-    return State(coords, obstacles, reward, goal, wall_distance)
+    return State(coords, self.actions[action], obstacles, reward, goal, wall_distance)
 
   def wall_distance(self, coords):
     (x, y) = coords
@@ -88,12 +87,14 @@ class Mdp:
   def is_terminal(self, state):
     return self.snake.crush(state.center) or self.out_of_board(state.center)
 
+  def opposite_action(self, state):
+    return self.directions[(state.direction[0] * -1, state.direction[1] * -1)]
+
   def possible_actions(self, state):
     if self.is_terminal(state):
       return None
     actions_list = list(self.actions.keys())
-    forbidden_action = self.directions[self.snake.backward_move()]
-    actions_list.remove(forbidden_action)
+    actions_list.remove(self.opposite_action(state))
     return actions_list
 
   def next_state(self, state, action):
@@ -102,7 +103,7 @@ class Mdp:
     (x, y) = state.center
     x += self.actions[action][0]
     y += self.actions[action][1]
-    return self.create_state((x, y))
+    return self.create_state((x, y), action)
 
   def reward(self, state, action):
     next_state = self.next_state(state, action)
@@ -127,7 +128,7 @@ class Mdp:
 class RLearning:
   def __init__(self, mdp, train=True, gamma=0.9, alpha=1.0, epsilon=0.8, episodes=25, max_steps=100, l_range=-0.1, r_range=0.1):
     self.mdp = mdp
-    self.state = self.mdp.create_state(self.mdp.snake.body[0])
+    self.state = self.mdp.create_state(self.mdp.snake.head(), "Right")
     self.train = train
     self.gamma = gamma
     self.alpha = alpha
@@ -140,10 +141,6 @@ class RLearning:
     self.epsilon_delta = self.epsilon/episodes
     self.wei_num = 4
     self.weights = [l_range + (random.random() * (r_range - l_range)) for i in range(self.wei_num)]
-
-  def reset_rl(self, episode):
-    self.epsilon += self.epsilon_delta * episode
-    self.weights = [self.l_range + (random.random() * (self.r_range - self.l_range)) for i in range(self.wei_num)]
 
   def function_approximation(self, state, action):
     features = state.features_value(action)
@@ -177,11 +174,13 @@ class RLearning:
 
     probability = random.randint(0, 100)
     if self.train and self.epsilon*100 > probability:
-      actions = list(self.mdp.actions.keys())
-      actions.remove(self.mdp.directions[self.mdp.snake.backward_move()])
-      return random.choice(actions)
+      return random.choice(possbile_actions)
 
-    return self.argmax_q_value(state)
+    action = self.argmax_q_value(state)
+    if action in possbile_actions:
+      return self.argmax_q_value(state)
+    else:
+      return random.choice(possbile_actions)
 
   def temporal_difference(self, next_state, action):
     next_q_max = self.max_q_value(next_state)

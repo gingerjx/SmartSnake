@@ -7,8 +7,8 @@ class Snake:
     self.direction = (0, -1)  # (0 1) right, (0 -1) left, (-1 0) up, (1 0) down
     self.body = [init_coords[0], init_coords[1]]
 
-  def backward_move(self):
-    return (self.direction[0] * -1, self.direction[1] * -1)
+  def head(self):
+    return self.body[0]
 
   def crush(self, coords):
     for i in range(1, len(self.body)):
