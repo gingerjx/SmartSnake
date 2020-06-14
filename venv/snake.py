@@ -10,7 +10,10 @@ class Snake:
   def head(self):
     return self.body[0]
 
-  def crush(self, coords):
+  def tail(self):
+    return self.body[-1]
+
+  def is_crushed(self, coords):
     for i in range(1, len(self.body)):
       if self.body[i] == coords:
         return True
@@ -24,9 +27,4 @@ class Snake:
   def pop_tail(self):
     tail = self.body.pop()
     return tail
-
-  def reset(self, init_coords):
-    self.eaten_fruits = 0
-    self.body = [init_coords[0], init_coords[1]]
-    self.direction = (0, -1)
 

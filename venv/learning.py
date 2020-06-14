@@ -1,42 +1,67 @@
 import random
-import snake
+import pygame
+from snake import Snake
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.optimizers import SGD, Adam
+import numpy as np
+from collections import deque
+
+actions = {"Right": (0, 1), "Left": (0, -1), "Down": (1, 0), "Up": (-1, 0)}
+directions = {(0, 1): "Right", (0, -1): "Left", (1, 0): "Down", (-1, 0): "Up"}
+map_index_to_action = {0: "Right", 1: "Left", 2: "Down", 3: "Up"}
+map_action_to_index = {"Right": 0, "Left": 1, "Down": 2, "Up": 3}
 
 class State:
-  def __init__(self, center, direction, obstacles, reward, goal, walls_dist):
-    self.center = center          # tuple contains head position
-    self.direction = direction    # tuple contatins information about move direction
+  def __init__(self, head, direction, is_goal, obstacles, reward_dir, walls_dist):
+    self.head = head              # tuple contains head position
+    self.direction = direction    # tuple indicate direction of snake
+    self.is_goal = is_goal        # boolean contains information about if state is a goal state
     self.obstacles = obstacles    # dictionary contains information about obstacles presence in every four sides
-    self.reward = reward          # dictionary contains information about reward presence in every four sides
-    self.goal = goal              # boolean contatins information about if state is a goal state
+    self.reward_dir = reward_dir  # dictionary contains information about reward presence in every four sides
     self.walls_dist = walls_dist  # dictionary contains information about distance to wall in every four sides
 
-  def features_value(self, action):
-    obstacles_value = 1.0 if self.obstacles[action] else 0.0
-    reward_value = 0.1 if self.reward[action] else 0.0
-    goal_value = 1.0 if self.goal else 0.0
-    walls_dist_value = self.walls_dist[action]
-    return {0: obstacles_value, 1: reward_value, 2: goal_value, 3: walls_dist_value}
+  def get_direction_vector(self):
+    """Return one hot vector with direction"""
+    vector = [0, 0, 0, 0]
+    action = directions[self.direction]
+    vector[map_action_to_index[action]] = 1
+    return vector
 
-class Mdp:
+  def to_net_input(self):
+    """Return transformed state for network input"""
+    return np.array(self.get_direction_vector() + list(self.obstacles.values())
+                    + list(self.reward_dir.values()) + list(self.walls_dist.values())).reshape(1, -1)
+
+class MDP:
   def __init__(self, board_size):
     self.board_size = board_size
-    self.cells = [["." for j in range(self.board_size[1])]
-                       for i in range(self.board_size[0])]
+    self.reset()
+
+  def init_cells(self):
+    """Return initialized cells with two-segment snake and snake's coords.
+       In cells: '.' - empty, 'S' - snake, 'F' - fruit."""
+    cells = np.array([["." for j in range(self.board_size[1])]
+                           for i in range(self.board_size[0])])
     head_coords = (self.board_size[0] // 2, self.board_size[1] // 2)
-    init_coords = (head_coords, (head_coords[0], head_coords[1] + 1))
-    self.cells[init_coords[0][0]][init_coords[0][1]] = "S"
-    self.cells[init_coords[1][0]][init_coords[1][1]] = "S"
-    self.snake = snake.Snake(init_coords, board_size)
+    init_snake_coords = (head_coords, (head_coords[0], head_coords[1] + 1))
+    cells[init_snake_coords[0][0]][init_snake_coords[0][1]] = "S"
+    cells[init_snake_coords[1][0]][init_snake_coords[1][1]] = "S"
+    return cells, init_snake_coords
+
+  def reset(self):
+    """Reset environment"""
+    self.cells, init_snake_coords = self.init_cells()
+    self.snake = Snake(init_snake_coords, self.board_size)
     self.fruit_coords = (0, 0)  # need to init for 'rand_fruit_coords()' function
     self.fruit_coords = self.rand_fruit_coords()
-    self.actions = {"Right": (0, 1), "Left": (0, -1), "Down": (1, 0), "Up": (-1, 0)}
-    self.directions = {(0, 1): "Right", (0, -1): "Left", (1, 0): "Down", (-1, 0): "Up"}
 
-  def out_of_board(self, coords):
-    (x, y) = coords
+  def is_out_of_board(self, coords):
+    x, y = coords
     return x < 0 or x >= self.board_size[0] or y < 0 or y >= self.board_size[1]
 
   def rand_fruit_coords(self):
+    """Return new position of fruit and update cells"""
     empty_cells = []
     for i in range(self.board_size[0]):
       for j in range(self.board_size[1]):
@@ -48,65 +73,71 @@ class Mdp:
     self.fruit_coords = new_coords
     return new_coords
 
-  def create_state(self, coords, action):
-    (x, y) = coords
+  def get_state(self, coords, action):
+    """Return state based on given 'coords', 'action' and current cells status"""
+    x, y = coords
 
     obstacles = {}
-    for act in self.actions:
-      (dir_x, dir_y) = self.actions[act]
+    for act in actions:
+      (dir_x, dir_y) = actions[act]
       next_coords = (x + dir_x, y + dir_y)
-      if self.out_of_board(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "S":
-        obstacles[act] = True
+      if self.is_out_of_board(next_coords) or self.cells[next_coords[0]][next_coords[1]] == "S":
+        obstacles[act] = 1.0
       else:
-        obstacles[act] = False
+        obstacles[act] = 0.0
 
     reward = {}
-    (fruit_x, fruit_y) = self.fruit_coords
-    reward["Right"] = True if y < fruit_y else False
-    reward["Left"] = True if y > fruit_y else False
-    reward["Down"] = True if x < fruit_x else False
-    reward["Up"] = True if x > fruit_x else False
+    fruit_x, fruit_y = self.fruit_coords
+    reward["Right"] = 1.0 if y < fruit_y else 0.0
+    reward["Left"] = 1.0 if y > fruit_y else 0.0
+    reward["Down"] = 1.0 if x < fruit_x else 0.0
+    reward["Up"] = 1.0 if x > fruit_x else 0.0
 
-    goal = (fruit_x == x and fruit_y == y)
-    wall_distance = self.wall_distance(coords)
-    return State(coords, self.actions[action], obstacles, reward, goal, wall_distance)
+    is_goal = (fruit_x == x and fruit_y == y)
+    wall_distance = self.get_wall_distance(coords)
+    return State(coords, actions[action], is_goal, obstacles, reward, wall_distance)
 
-  def wall_distance(self, coords):
-    (x, y) = coords
-    (size, _) = self.board_size
+  def get_wall_distance(self, coords):
+    """Return distance to every four walls from 'coords'"""
+    x, y = coords
+    size_x, size_y = self.board_size
     distance = {}
-    distance["Left"] = y/size
-    distance["Right"] = (size - y - 1)/size
-    distance["Up"] = x/size
-    distance["Down"] = (size - x - 1)/size
+    distance["Left"] = y/size_y
+    distance["Right"] = (size_y - y - 1)/size_y
+    distance["Up"] = x/size_x
+    distance["Down"] = (size_x - x - 1)/size_x
     return distance
 
   def is_goal(self, state):
-    return state.center == self.fruit_coords
+    return state.head == self.fruit_coords
 
   def is_terminal(self, state):
-    return self.snake.crush(state.center) or self.out_of_board(state.center)
+    return self.snake.is_crushed(state.head) or self.is_out_of_board(state.head)
 
-  def opposite_action(self, state):
-    return self.directions[(state.direction[0] * -1, state.direction[1] * -1)]
+  def get_opposite_action(self, state):
+    return directions[(state.direction[0] * -1, state.direction[1] * -1)]
 
-  def possible_actions(self, state):
+  def get_possible_actions(self, state):
+    """Return possible actions in 'state'. If it's terminal return None"""
     if self.is_terminal(state):
       return None
-    actions_list = list(self.actions.keys())
-    actions_list.remove(self.opposite_action(state))
+    actions_list = list(actions.keys())
+    actions_list.remove(self.get_opposite_action(state))
     return actions_list
 
-  def next_state(self, state, action):
+  def get_next_state(self, state, action):
+    """Return next state, which is result of taking 'action' in 'state'.
+       If it's terminal return the same 'state'"""
     if self.is_terminal(state):
       return state
-    (x, y) = state.center
-    x += self.actions[action][0]
-    y += self.actions[action][1]
-    return self.create_state((x, y), action)
+    (x, y) = state.head
+    x += actions[action][0]
+    y += actions[action][1]
+    return self.get_state((x, y), action)
 
-  def reward(self, state, action):
-    next_state = self.next_state(state, action)
+  def get_reward(self, state, action):
+    """Return reward for taking 'action' in 'state'"""
+    next_state = self.get_next_state(state, action)
     if self.is_terminal(next_state):
       return -1.0
     elif self.is_goal(next_state):
@@ -114,90 +145,173 @@ class Mdp:
     else:
       return 0.0
 
-  def reset(self):
-    self.cells = [["." for j in range(self.board_size[1])]
-                  for i in range(self.board_size[0])]
-    head_coords = (self.board_size[0] // 2, self.board_size[1] // 2)
-    init_coords = (head_coords, (head_coords[0], head_coords[1] + 1))
-    self.cells[init_coords[0][0]][init_coords[0][1]] = "S"
-    self.cells[init_coords[1][0]][init_coords[1][1]] = "S"
-    self.snake.reset(init_coords)
-    self.fruit_coords = (0, 0)  # need to init for 'rand_fruit_coords()' function
-    self.fruit_coords = self.rand_fruit_coords()
+  def move_snake(self):
+    """Based on given snake's direction snake and cells are updated"""
+    head = self.snake.move()
+    if head == self.fruit_coords:
+      self.rand_fruit_coords()
+      self.snake.eaten_fruits += 1
+    else:
+      tail = self.snake.pop_tail()
+      self.cells[tail[0]][tail[1]] = "."
+    self.cells[head[0]][head[1]] = "S"
 
-class RLearning:
-  def __init__(self, mdp, train=True, gamma=0.9, alpha=1.0, epsilon=0.8, episodes=25, max_steps=100, l_range=-0.1, r_range=0.1):
+class Agent:
+  def __init__(self, mdp, episodes=200, train=True, gamma=0.9, alpha=0.001, epsilon=0.8, max_steps=100):
     self.mdp = mdp
-    self.state = self.mdp.create_state(self.mdp.snake.head(), "Right")
+    self.current_state = self.mdp.get_state(self.mdp.snake.head(), "Left")
     self.train = train
-    self.gamma = gamma
-    self.alpha = alpha
-    self.epsilon = epsilon
-    self.episodes = episodes
-    self.max_steps = max_steps
+    self.gamma = gamma            # discount factor
+    self.alpha = alpha            # learning rate
+    self.epsilon = epsilon        # epsilon-greedy action probability
+    self.episodes = episodes      # number of episodes
+    self.max_steps = max_steps    # max useless (without eating fruit) steps in episode
 
-    self.l_range = l_range
-    self.r_range = r_range
-    self.epsilon_delta = self.epsilon/episodes
-    self.wei_num = 4
-    self.weights = [l_range + (random.random() * (r_range - l_range)) for i in range(self.wei_num)]
+    self.epsilon_decay = 0.95
+    self.epsilon_min = 0.01
+    self.memory = deque(maxlen=2000)  # memory of our agent - s, a, r, s', t||g
+    self.training_period = 20         # the number of steps followed by training
+    self.training_counter = 0         # counter of taken steps
+    self.batch_size = 64
 
-  def function_approximation(self, state, action):
-    features = state.features_value(action)
-    q_value = 0
-    for i in range(len(features)):
-      q_value += features[i]*self.weights[i]
-    return q_value
+    """Network model, input-Dense(16, ReLU)-Dense(32, ReLU)-ouput(4). Adam optimizer is used."""
+    self.model = Sequential()
+    self.model.add(Dense(16, input_dim=self.current_state.to_net_input().shape[1], activation='relu'))
+    self.model.add(Dense(32, activation='relu'))
+    self.model.add(Dense(4))
+    self.model.compile(loss='mse', optimizer=Adam(lr=alpha))
 
-  def max_q_value(self, state):
-    possible_actions = self.mdp.possible_actions(state)
-    if possible_actions is None:
-      return -1.0
-    max = self.function_approximation(state, "Right")
-    for action in self.mdp.actions:
-      q_val = self.function_approximation(state, action)
-      max = q_val if q_val > max else max
-    return max
-
-  def argmax_q_value(self, state):
-    max = self.max_q_value(state)
-    best_actions = []
-    for action in self.mdp.actions:
-      if self.function_approximation(state, action) == max:
-        best_actions.append(action)
-    return random.choice(best_actions)
-
-  def best_action(self, state):
-    possbile_actions = self.mdp.possible_actions(state)
+  def get_action(self, state):
+    """Return None if there's no possible action.
+       If it's training it will return epsilon-greedy action or the best one from net.
+       If it's normal game it will return the best action from net"""
+    possbile_actions = self.mdp.get_possible_actions(state)
     if possbile_actions is None:
       return None
 
-    probability = random.randint(0, 100)
-    if self.train and self.epsilon*100 > probability:
+    probability = random.uniform(0, 1)
+    if self.train and self.epsilon > probability:
       return random.choice(possbile_actions)
 
-    action = self.argmax_q_value(state)
-    if action in possbile_actions:
-      return self.argmax_q_value(state)
+    net_action = self.get_net_action(state, possbile_actions)
+    if net_action is None:
+      return random.choice(possbile_actions)
     else:
-      return random.choice(possbile_actions)
+      return net_action
 
-  def temporal_difference(self, next_state, action):
-    next_q_max = self.max_q_value(next_state)
-    reward = self.mdp.reward(self.state, action)
-    q_val = self.function_approximation(self.state, action)
-    return reward + self.gamma * next_q_max - q_val
+  def get_net_action(self, state, possible_actions):
+    """From network output for 'state' it finds the best actions.
+       From intersection of net best actions and 'possbile_actions' we random one action to be returned.
+       If there isn't common actions, None is returned"""
+    prediction = self.model.predict(state.to_net_input())
+    best_actions_index = np.where(prediction == np.max(prediction.reshape(-1)))[1]
+    best_actions = [map_index_to_action[b_a_i] for b_a_i in best_actions_index]
+    intersection = [v for v in best_actions if v in possible_actions]
+    if not intersection:  # empty
+      return None
+    else:
+      return random.choice(intersection)
 
-  def update(self, next_state, action):
-    delta = self.temporal_difference(next_state, action)
-    features = self.state.features_value(action)
-    for i in range(len(features)):
-      self.weights[i] += self.alpha * delta * features[i]
+  def net_training(self):
+    """Train network based on samples from memory"""
+    if self.batch_size > len(self.memory):
+      return
+    self.decrease_epsilon()
+    samples = random.sample(self.memory, self.batch_size)
+    batch, action, next_batch, reward, is_term_or_goal = self.create_batch(samples)
+
+    max_next = self.get_max_predictions(next_batch)
+    expected = self.get_expected_output(is_term_or_goal, reward, max_next)
+    predictions = self.model.predict(batch)
+
+    """Prediction in 's' is updated at 'a' output by expected value.
+       In case of forbidden action, prediction is assign to 0 there."""
+    for i in range(self.batch_size):
+      predictions[i][map_action_to_index[action[i]]] = expected[i]
+      forbidden_action = self.mdp.get_opposite_action(samples[i][0])
+      action_index = map_action_to_index[forbidden_action]
+      predictions[i][action_index] = 0
+
+    """Training"""
+    self.model.fit(batch, predictions, epochs=20, verbose=0)
+
+  def create_batch(self, samples):
+    """Return separated state, action, reward, next state and is_terminal or is_goal from given 'samples'"""
+    zipped_samples = list(zip(*samples))
+    batch = [v.to_net_input() for v in zipped_samples[0]]
+    action = zipped_samples[1]
+    reward = zipped_samples[2]
+    next_batch = [v.to_net_input() for v in zipped_samples[3]]
+    is_term_or_goal = zipped_samples[4]
+    return np.array(batch).reshape(self.batch_size, -1), np.array(action), \
+           np.array(next_batch).reshape(self.batch_size, -1), np.array(reward), np.array(is_term_or_goal)
+
+  def get_max_predictions(self, batch):
+    """Returns values of best net predictions"""
+    predictions = self.model.predict(batch)
+    max_values = np.max(predictions, axis=1)
+    return max_values
+
+  def get_expected_output(self, is_terminal, reward, max_values):
+    """Return calculated expected value of specific action for network training"""
+    expected_output = []
+    for i in range(self.batch_size):
+      if is_terminal[i]:  expected_output.append(reward[i])
+      else:               expected_output.append(reward[i] + self.gamma*max_values[i])
+    return expected_output
 
   def step(self):
-    action = self.best_action(self.state)
-    next_state = self.mdp.next_state(self.state, action)
-    self.update(next_state, action)
-    self.state = next_state
-    self.mdp.snake.direction = self.mdp.actions[action]
-    return (self.state, action)
+    """Based on get_action() choose next_state and update snake's direction.
+       Append tuple (s, a, r, s', t||g) to memory. Update agent."""
+    action = self.get_action(self.current_state)
+    assert action is not None
+
+    next_state = self.mdp.get_next_state(self.current_state, action)
+    reward = self.mdp.get_reward(self.current_state, action)
+    self.memory.append((self.current_state, action, reward, next_state,\
+                        self.mdp.is_terminal(next_state) or next_state.is_goal))  # is_terminal or is_goal
+
+    if self.training_counter >= self.training_period:
+      self.training_counter = 0
+      self.net_training()
+
+    self.mdp.snake.direction = actions[action]
+    self.current_state = next_state
+    self.training_counter += 1
+
+  def reset_episode(self):
+    """Reset enviroment and agent for new episode"""
+    self.mdp.reset()
+    self.current_state = self.mdp.get_state(self.mdp.snake.head(), "Left")
+
+  def is_terminal(self):
+    return self.mdp.is_terminal(self.current_state)
+
+  def is_goal(self):
+    return self.mdp.is_goal(self.current_state)
+
+  def get_score(self):
+    """Return number of eaten fruits in episode"""
+    return self.mdp.snake.eaten_fruits
+
+  def decrease_epsilon(self):
+    if self.epsilon > self.epsilon_min:
+      self.epsilon *= self.epsilon_decay
+    else: self.epsilon = self.epsilon_min
+
+  def get_user_action(self):
+    """For debug"""
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_LEFT]:
+      return "Left"
+    elif keys[pygame.K_RIGHT]:
+      return "Right"
+    elif keys[pygame.K_DOWN]:
+      return "Down"
+    elif keys[pygame.K_UP]:
+      return "Up"
+    elif keys[pygame.K_d]:
+      print("Debug")
+      return None
+    else:
+      return None

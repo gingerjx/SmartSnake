@@ -18,8 +18,10 @@ In the future...
 
 **Done**
 
-For now snake game is ready with all GUI components. Snake's moves are controlled by Reinforcement Learning mechanisms. Function Approximation is used to estimate state value. State consists of four features. These features and corresponding weights are used to calculation of state value. Snake is learning by adjusting these weights. Using weights is instead of QTable, decrease memory usage, but increase learning time.
+For now snake game is ready with all GUI components. Snake's moves are controlled by Deep Q Learning. During training, moves are chosen from network prediction or by epsilon-greedy approach. State is represented as Function Approximation features and they are transformed to vector shape, prepared for networks' input. In every step snake saves in memory - current state, taken action, received reward, next state and boolean saying if it's terminal or goal state. After some steps network is trained by using samples from the memory.
+For now this implementation works as well as Function Approximation, but future changes should improve this snake and makes him smarter!
 
 **TODO**
 
-Deep QLearning.
+Try another state representation
+Implement Double Deep Q Learning
