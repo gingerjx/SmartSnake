@@ -1,9 +1,9 @@
 import random
 import pygame
 from snake import Snake
-from keras.models import Sequential
+from keras.models import Sequential, clone_model
 from keras.layers import Dense
-from keras.optimizers import SGD, Adam
+from keras.optimizers import Adam
 import numpy as np
 from collections import deque
 
@@ -13,13 +13,14 @@ map_index_to_action = {0: "Right", 1: "Left", 2: "Down", 3: "Up"}
 map_action_to_index = {"Right": 0, "Left": 1, "Down": 2, "Up": 3}
 
 class State:
-  def __init__(self, head, direction, is_goal, obstacles, reward_dir, walls_dist):
-    self.head = head              # tuple contains head position
-    self.direction = direction    # tuple indicate direction of snake
-    self.is_goal = is_goal        # boolean contains information about if state is a goal state
-    self.obstacles = obstacles    # dictionary contains information about obstacles presence in every four sides
-    self.reward_dir = reward_dir  # dictionary contains information about reward presence in every four sides
-    self.walls_dist = walls_dist  # dictionary contains information about distance to wall in every four sides
+  def __init__(self, head, direction, is_goal, obstacles, reward_dir, walls_dist, snake_density):
+    self.head = head                    # tuple contains head position
+    self.direction = direction          # tuple indicate direction of snake
+    self.is_goal = is_goal              # boolean contains information about if state is a goal state
+    self.obstacles = obstacles          # dictionary contains information about obstacles presence in every four sides
+    self.reward_dir = reward_dir        # dictionary contains information about reward presence in every four sides
+    self.walls_dist = walls_dist        # dictionary contains information about distance to wall in every four sides
+    self.snake_density = snake_density  # dictionary contains infromation about density of snakes' body segments in four sides
 
   def get_direction_vector(self):
     """Return one hot vector with direction"""
@@ -30,8 +31,8 @@ class State:
 
   def to_net_input(self):
     """Return transformed state for network input"""
-    return np.array(self.get_direction_vector() + list(self.obstacles.values())
-                    + list(self.reward_dir.values()) + list(self.walls_dist.values())).reshape(1, -1)
+    return np.array(self.get_direction_vector() + list(self.obstacles.values()) + list(self.reward_dir.values())
+                    + list(self.walls_dist.values()) + list(self.snake_density.values())).reshape(1, -1)
 
 class MDP:
   def __init__(self, board_size):
@@ -95,7 +96,8 @@ class MDP:
 
     is_goal = (fruit_x == x and fruit_y == y)
     wall_distance = self.get_wall_distance(coords)
-    return State(coords, actions[action], is_goal, obstacles, reward, wall_distance)
+    snake_density = self.get_body_density(coords)
+    return State(coords, actions[action], is_goal, obstacles, reward, wall_distance, snake_density)
 
   def get_wall_distance(self, coords):
     """Return distance to every four walls from 'coords'"""
@@ -107,6 +109,23 @@ class MDP:
     distance["Up"] = x/size_x
     distance["Down"] = (size_x - x - 1)/size_x
     return distance
+
+  def get_body_density(self, coords):
+    """Return density of snakes' body in each direction"""
+    x, y = coords
+    size = 5
+    sft = size // 2
+    shift = {"Right": (-sft, 1), "Left": (-sft, -size), "Down": (1, -sft), "Up": (-size, -sft)}
+    body_density = {}
+    for act in actions:
+      x_sft, y_sft = shift[act]
+      x_start = x + x_sft if x + x_sft > 0 else 0
+      y_start = y + y_sft if y + y_sft > 0 else 0
+      x_end = x_start + size
+      y_end = y_start + size
+      part = self.cells[x_start:x_end, y_start:y_end]
+      body_density[act] = len(part[part == 'S']) / (size ** 2)
+    return body_density
 
   def is_goal(self, state):
     return state.head == self.fruit_coords
@@ -157,9 +176,9 @@ class MDP:
     self.cells[head[0]][head[1]] = "S"
 
 class Agent:
-  def __init__(self, mdp, episodes=200, train=True, gamma=0.9, alpha=0.001, epsilon=0.8, max_steps=100):
+  def __init__(self, mdp, episodes=500, train=True, gamma=0.9, alpha=0.001, epsilon=0.8, max_steps=100):
     self.mdp = mdp
-    self.current_state = self.mdp.get_state(self.mdp.snake.head(), "Left")
+    self.current_state = self.mdp.get_state(self.mdp.snake.get_head(), "Left")
     self.train = train
     self.gamma = gamma            # discount factor
     self.alpha = alpha            # learning rate
@@ -172,14 +191,20 @@ class Agent:
     self.memory = deque(maxlen=2000)  # memory of our agent - s, a, r, s', t||g
     self.training_period = 20         # the number of steps followed by training
     self.training_counter = 0         # counter of taken steps
+    self.target_update_period = 10    # the number of online network training to copy weights into online
+    self.target_update_counter = 0    # counter of online network training
     self.batch_size = 64
 
-    """Network model, input-Dense(16, ReLU)-Dense(32, ReLU)-ouput(4). Adam optimizer is used."""
-    self.model = Sequential()
-    self.model.add(Dense(16, input_dim=self.current_state.to_net_input().shape[1], activation='relu'))
-    self.model.add(Dense(32, activation='relu'))
-    self.model.add(Dense(4))
-    self.model.compile(loss='mse', optimizer=Adam(lr=alpha))
+    """Online network, input-Dense(16, ReLU)-Dense(32, ReLU)-output(4)"""
+    self.online = Sequential()
+    self.online.add(Dense(16, input_dim=self.current_state.to_net_input().shape[1], activation='relu'))
+    self.online.add(Dense(32, activation='relu'))
+    self.online.add(Dense(4))
+    self.online.compile(loss='mse', optimizer=Adam(lr=alpha))
+    """Target network, same weights and structure as in online.
+       This network is used only in get_max_target_predictions()"""
+    self.target = clone_model(self.online)
+    self.target.set_weights(self.online.get_weights())
 
   def get_action(self, state):
     """Return None if there's no possible action.
@@ -203,7 +228,7 @@ class Agent:
     """From network output for 'state' it finds the best actions.
        From intersection of net best actions and 'possbile_actions' we random one action to be returned.
        If there isn't common actions, None is returned"""
-    prediction = self.model.predict(state.to_net_input())
+    prediction = self.online.predict(state.to_net_input())
     best_actions_index = np.where(prediction == np.max(prediction.reshape(-1)))[1]
     best_actions = [map_index_to_action[b_a_i] for b_a_i in best_actions_index]
     intersection = [v for v in best_actions if v in possible_actions]
@@ -216,13 +241,14 @@ class Agent:
     """Train network based on samples from memory"""
     if self.batch_size > len(self.memory):
       return
+    self.target_update_counter += 1
     self.decrease_epsilon()
     samples = random.sample(self.memory, self.batch_size)
     batch, action, next_batch, reward, is_term_or_goal = self.create_batch(samples)
 
-    max_next = self.get_max_predictions(next_batch)
+    max_next = self.get_max_target_predictions(next_batch)
     expected = self.get_expected_output(is_term_or_goal, reward, max_next)
-    predictions = self.model.predict(batch)
+    predictions = self.online.predict(batch)
 
     """Prediction in 's' is updated at 'a' output by expected value.
        In case of forbidden action, prediction is assign to 0 there."""
@@ -232,8 +258,12 @@ class Agent:
       action_index = map_action_to_index[forbidden_action]
       predictions[i][action_index] = 0
 
-    """Training"""
-    self.model.fit(batch, predictions, epochs=20, verbose=0)
+    """Training of online network"""
+    self.online.fit(batch, predictions, epochs=20, verbose=0)
+    """Update of target network (copy weights from online)"""
+    if self.target_update_counter >= self.target_update_period:
+      self.target.set_weights(self.online.get_weights())
+      self.target_update_counter = 0
 
   def create_batch(self, samples):
     """Return separated state, action, reward, next state and is_terminal or is_goal from given 'samples'"""
@@ -246,9 +276,9 @@ class Agent:
     return np.array(batch).reshape(self.batch_size, -1), np.array(action), \
            np.array(next_batch).reshape(self.batch_size, -1), np.array(reward), np.array(is_term_or_goal)
 
-  def get_max_predictions(self, batch):
+  def get_max_target_predictions(self, batch):
     """Returns values of best net predictions"""
-    predictions = self.model.predict(batch)
+    predictions = self.target.predict(batch)
     max_values = np.max(predictions, axis=1)
     return max_values
 
@@ -282,7 +312,7 @@ class Agent:
   def reset_episode(self):
     """Reset enviroment and agent for new episode"""
     self.mdp.reset()
-    self.current_state = self.mdp.get_state(self.mdp.snake.head(), "Left")
+    self.current_state = self.mdp.get_state(self.mdp.snake.get_head(), "Left")
 
   def is_terminal(self):
     return self.mdp.is_terminal(self.current_state)
@@ -298,20 +328,3 @@ class Agent:
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay
     else: self.epsilon = self.epsilon_min
-
-  def get_user_action(self):
-    """For debug"""
-    keys = pygame.key.get_pressed()
-    if keys[pygame.K_LEFT]:
-      return "Left"
-    elif keys[pygame.K_RIGHT]:
-      return "Right"
-    elif keys[pygame.K_DOWN]:
-      return "Down"
-    elif keys[pygame.K_UP]:
-      return "Up"
-    elif keys[pygame.K_d]:
-      print("Debug")
-      return None
-    else:
-      return None

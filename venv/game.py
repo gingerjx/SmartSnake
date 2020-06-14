@@ -36,21 +36,26 @@ class Game:
     self.font = pygame.font.SysFont("comicsans", cell_size[0] + 10)
 
   def map_coords(self, coords):
+    """Return mapped 'coords' to pixel coords"""
     return (coords[1] * self.cell_size[1], coords[0] * self.cell_size[0])
 
   def start(self):
+    """Start game, contain game loop"""
     steps = 0
+    all_scores = 0
     while self.game_running:
       for event in pygame.event.get():
         if event.type == pygame.QUIT:
           self.game_running = False
-
+      """Display snake if it is last episode or flag is set"""
       if self.display_training or self.episode == self.agent.episodes:
         self.refresh()
-
+      """Make a reinforcement learning step"""
       self.agent.step()
       steps += 1
+      """Check if it's end of episode and handle it"""
       if self.agent.is_terminal() or steps >= self.agent.max_steps:
+        all_scores += self.agent.get_score()
         if self.episode > self.agent.episodes:
           self.game_running = False
           break
@@ -58,19 +63,23 @@ class Game:
           self.reset(steps)
           steps = 0
           continue
-
+      """Reset steps if agent reached fruit"""
       if self.agent.is_goal():
         steps = 0
+      """Make snake move"""
       self.agent.mdp.move_snake()
 
+    print(f"Score per episode: {all_scores/self.agent.episodes:.2f} (Best: 14.86)")
     pygame.quit()
 
   def reset(self, steps):
+    """"Reset episode"""
     print(f"Ep. {self.episode}    steps {steps}   score {self.agent.get_score()}    epsilon {self.agent.epsilon}")
     self.episode += 1
     self.agent.reset_episode()
 
   def refresh(self):
+    """Refresh application view"""
     self.board.fill(self.board_color)
     self.draw_fruit()
     self.draw_snake()
@@ -93,11 +102,13 @@ class Game:
     self.clock.tick(self.speed)
 
   def draw_fruit(self):
+    """Draw fruit on screen"""
     mapped_coords = self.map_coords(self.agent.mdp.fruit_coords)
     mapped_coords = (mapped_coords[0] + self.cell_size[0] // 2, mapped_coords[1] + self.cell_size[1] // 2)
     pygame.draw.circle(self.board, self.fruit_color, mapped_coords, self.cell_size[0] // 2)
 
   def draw_snake(self):
+    """Draw snake on screen"""
     for i in range(len(self.agent.mdp.snake.body)):
       mapped_coords = self.map_coords(self.agent.mdp.snake.body[i])
       (r, g, b) = self.snake_color
