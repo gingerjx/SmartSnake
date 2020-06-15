@@ -1,7 +1,7 @@
 import random
 import pygame
 from snake import Snake
-from keras.models import Sequential, clone_model
+from keras.models import Sequential, clone_model, load_model
 from keras.layers import Dense
 from keras.optimizers import Adam
 import numpy as np
@@ -176,14 +176,14 @@ class MDP:
     self.cells[head[0]][head[1]] = "S"
 
 class Agent:
-  def __init__(self, mdp, episodes=500, train=True, gamma=0.9, alpha=0.001, epsilon=0.8, max_steps=100):
+  def __init__(self, mdp, train, episodes, gamma, alpha, epsilon, max_steps):
     self.mdp = mdp
     self.current_state = self.mdp.get_state(self.mdp.snake.get_head(), "Left")
     self.train = train
     self.gamma = gamma            # discount factor
     self.alpha = alpha            # learning rate
-    self.epsilon = epsilon        # epsilon-greedy action probability
-    self.episodes = episodes      # number of episodes
+    self.epsilon = epsilon if train else 0       # epsilon-greedy action probability
+    self.episodes = episodes if train else 1     # number of episodes
     self.max_steps = max_steps    # max useless (without eating fruit) steps in episode
 
     self.epsilon_decay = 0.95
@@ -195,16 +195,25 @@ class Agent:
     self.target_update_counter = 0    # counter of online network training
     self.batch_size = 64
 
-    """Online network, input-Dense(16, ReLU)-Dense(32, ReLU)-output(4)"""
-    self.online = Sequential()
-    self.online.add(Dense(16, input_dim=self.current_state.to_net_input().shape[1], activation='relu'))
-    self.online.add(Dense(32, activation='relu'))
-    self.online.add(Dense(4))
-    self.online.compile(loss='mse', optimizer=Adam(lr=alpha))
-    """Target network, same weights and structure as in online.
-       This network is used only in get_max_target_predictions()"""
-    self.target = clone_model(self.online)
-    self.target.set_weights(self.online.get_weights())
+    "If its training new model is creted, otherwise it is loaded from file"
+    if train:
+      """Online network, input-Dense(16, ReLU)-Dense(32, ReLU)-output(4)"""
+      self.online = Sequential()
+      self.online.add(Dense(16, input_dim=self.current_state.to_net_input().shape[1], activation='relu'))
+      self.online.add(Dense(32, activation='relu'))
+      self.online.add(Dense(4))
+      self.online.compile(loss='mse', optimizer=Adam(lr=alpha))
+      """Target network, same weights and structure as in online.
+         This network is used only in get_max_target_predictions()"""
+      self.target = clone_model(self.online)
+      self.target.set_weights(self.online.get_weights())
+    else:
+      self.online = load_model('network_model', compile=False)
+      self.online.compile(loss='mse', optimizer=Adam(lr=alpha))
+      self.target = load_model('network_model', compile=False)
+
+  def save_model(self):
+    self.online.save('network_model')
 
   def get_action(self, state):
     """Return None if there's no possible action.
@@ -301,7 +310,7 @@ class Agent:
     self.memory.append((self.current_state, action, reward, next_state,\
                         self.mdp.is_terminal(next_state) or next_state.is_goal))  # is_terminal or is_goal
 
-    if self.training_counter >= self.training_period:
+    if self.training_counter >= self.training_period and self.train:
       self.training_counter = 0
       self.net_training()
 

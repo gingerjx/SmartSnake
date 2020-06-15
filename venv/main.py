@@ -1,10 +1,13 @@
 import game
 
 if __name__ == '__main__':
-  board_size = {"21x21": (920, 920), "18x18": (800, 800), "15x15": (680, 680), "12x12": (560, 560)}
-  game = game.Game(surface_size=board_size["12x12"], display_training=False)
+  """It is highly not recommended to train snake on large boards"""
+  board_size = {"32x32": (680, 680), "26x26": (560, 560), "20x20": (440, 440), "14x14": (320, 320), "8x8": (200, 200)}
+  game = game.Game(board_size["14x14"], False)
   print("Game started")
   game.start()
+  game.agent.save_model()
+  game.pygame_quit()
   print("Game over")
 
 
