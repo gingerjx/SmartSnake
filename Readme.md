@@ -4,7 +4,7 @@ Performance of Reinforcement Learning in snake game
 
 ## Language and libraries
 
-Python 3.6, pygame 1.9.6, Tensorflow 2.2.0, Keras 2.3.1
+Python 3.6, pygame 1.9.6, numpy 1.19.0
 
 ## Game view
 
