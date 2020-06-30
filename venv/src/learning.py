@@ -1,8 +1,9 @@
 import random
-import pygame
 from snake import Snake
+from keras.models import Sequential, clone_model, load_model
+from keras.layers import Dense
+from keras.optimizers import Adam
 import numpy as np
-import neural as neu
 from collections import deque
 
 actions = {"Right": (0, 1), "Left": (0, -1), "Down": (1, 0), "Up": (-1, 0)}
@@ -10,16 +11,17 @@ directions = {(0, 1): "Right", (0, -1): "Left", (1, 0): "Down", (-1, 0): "Up"}
 map_index_to_action = {0: "Right", 1: "Left", 2: "Down", 3: "Up"}
 map_action_to_index = {"Right": 0, "Left": 1, "Down": 2, "Up": 3}
 
-"""State class"""
 class State:
-  def __init__(self, head, direction, is_goal, obstacles, reward_dir, walls_dist, snake_density):
-    self.head = head                    # tuple contains head position
-    self.direction = direction          # tuple indicate direction of snake
-    self.is_goal = is_goal              # boolean contains information about if state is a goal state
-    self.obstacles = obstacles          # dictionary contains information about obstacles presence in every four sides
-    self.reward_dir = reward_dir        # dictionary contains information about reward presence in every four sides
-    self.walls_dist = walls_dist        # dictionary contains information about distance to wall in every four sides
-    self.snake_density = snake_density  # dictionary contains infromation about density of snakes' body segments in four sides
+  def __init__(self, head, direction, is_eaten, obstacles, fruit_dir, walls_dist, body_dens, snake_len, head_tail_dist):
+    self.head = head                      # tuple contains head position
+    self.direction = direction            # tuple indicate direction of snake
+    self.is_eaten = is_eaten              # boolean contains information about if fruit is eaten
+    self.obstacles = obstacles            # dictionary contains information about obstacles presence in every four sides
+    self.fruit_dir = fruit_dir            # dictionary contains information about fruit presence in every four sides
+    self.walls_dist = walls_dist          # dictionary contains information about distance to wall in every four sides
+    self.body_dens = body_dens            # dictionary contains infromation about density of snake's body segments in four sides
+    self.snake_len = snake_len            # snake's length
+    self.head_tail_dist = head_tail_dist  # manhattan distance between snake's head and tail
 
   def get_direction_vector(self):
     """Return one hot vector with direction"""
@@ -30,13 +32,13 @@ class State:
 
   def to_net_input(self):
     """Return transformed state for network input"""
-    return np.array(self.get_direction_vector() + list(self.obstacles.values()) + list(self.reward_dir.values())
-                    + list(self.walls_dist.values()) + list(self.snake_density.values()))
+    return np.array(self.get_direction_vector() + list(self.obstacles.values()) + list(self.fruit_dir.values())
+                    + list(self.walls_dist.values()) + list(self.body_dens.values()) + [self.snake_len, self.head_tail_dist]).reshape(1, -1)
 
-"""Markov decision process class"""
 class MDP:
   def __init__(self, board_size):
     self.board_size = board_size
+    self.area = board_size[0] * board_size[1]
     self.reset()
 
   def init_cells(self):
@@ -87,17 +89,19 @@ class MDP:
       else:
         obstacles[act] = 0.0
 
-    reward = {}
+    fruit = {}
     fruit_x, fruit_y = self.fruit_coords
-    reward["Right"] = 1.0 if y < fruit_y else 0.0
-    reward["Left"] = 1.0 if y > fruit_y else 0.0
-    reward["Down"] = 1.0 if x < fruit_x else 0.0
-    reward["Up"] = 1.0 if x > fruit_x else 0.0
+    fruit["Right"] = 1.0 if y < fruit_y else 0.0
+    fruit["Left"] = 1.0 if y > fruit_y else 0.0
+    fruit["Down"] = 1.0 if x < fruit_x else 0.0
+    fruit["Up"] = 1.0 if x > fruit_x else 0.0
 
-    is_goal = (fruit_x == x and fruit_y == y)
+    is_eaten = (fruit_x == x and fruit_y == y)
     wall_distance = self.get_wall_distance(coords)
-    snake_density = self.get_body_density(coords)
-    return State(coords, actions[action], is_goal, obstacles, reward, wall_distance, snake_density)
+    body_dens = self.get_body_density(coords)
+    snake_len = self.snake.eaten_fruits / self.area
+    head_tail_dist = self.get_manhattan_distance(coords, self.snake.get_tail()) / self.area
+    return State(coords, actions[action], is_eaten, obstacles, fruit, wall_distance, body_dens, snake_len, head_tail_dist)
 
   def get_wall_distance(self, coords):
     """Return distance to every four walls from 'coords'"""
@@ -111,7 +115,7 @@ class MDP:
     return distance
 
   def get_body_density(self, coords):
-    """Return density of snakes' body in each direction"""
+    """Return density of snake's body (body segments / view area) in each direction"""
     x, y = coords
     size = 5
     sft = size // 2
@@ -126,6 +130,9 @@ class MDP:
       part = self.cells[x_start:x_end, y_start:y_end]
       body_density[act] = len(part[part == 'S']) / (size ** 2)
     return body_density
+
+  def get_manhattan_distance(self, coords_1, coords_2):
+    return abs(coords_1[0] - coords_2[0]) + abs(coords_2[1] - coords_2[1])
 
   def is_goal(self, state):
     return state.head == self.fruit_coords
@@ -175,7 +182,6 @@ class MDP:
       self.cells[tail[0]][tail[1]] = "."
     self.cells[head[0]][head[1]] = "S"
 
-"""Reinforcement learning agent class"""
 class Agent:
   def __init__(self, mdp, train, episodes, gamma, alpha, epsilon, max_steps):
     self.mdp = mdp
@@ -187,29 +193,37 @@ class Agent:
     self.episodes = episodes if train else 1     # number of episodes
     self.max_steps = max_steps    # max useless (without eating fruit) steps in episode
 
-    self.epsilon_decay = 0.95
+    self.epsilon_decay = 0.9
     self.epsilon_min = 0.01
-    self.memory = deque(maxlen=2000)  # memory of our agent - s, a, r, s', t||g
+    self.memory = deque(maxlen=2000)  # memory of our agent - s, a, r, s', t||e
     self.training_period = 20         # the number of steps followed by training
     self.training_counter = 0         # counter of taken steps
     self.target_update_period = 10    # the number of online network training to copy weights into online
     self.target_update_counter = 0    # counter of online network training
     self.batch_size = 64
 
-    "If its training new model is created, otherwise it is loaded from file"
-    if train:
+    self.create_model()
+
+  def create_model(self):
+    "If its training new model is creted, otherwise it is loaded from file"
+    if self.train:
       """Online network"""
-      input_shape = self.current_state.to_net_input().shape[0]
-      self.online = neu.Network()
-      self.online.add_input(input_shape)
-      self.online.add_fully_connected(40)
-      self.online.add_fully_connected(4)
+      self.online = Sequential()
+      self.online.add(Dense(16, input_dim=self.current_state.to_net_input().shape[1], activation='relu'))
+      self.online.add(Dense(32, activation='relu'))
+      self.online.add(Dense(4, activation='linear'))
+      self.online.compile(loss='mse', optimizer=Adam(lr=self.alpha))
       """Target network, same weights and structure as in online.
          This network is used only in get_max_target_predictions()"""
-      self.target = self.online.copy()
+      self.target = clone_model(self.online)
+      self.target.set_weights(self.online.get_weights())
     else:
-      self.online = neu.load()
-      self.target = self.online.copy()
+      self.online = load_model('network_model.h5', compile=False)
+      self.online.compile(loss='mse', optimizer=Adam(lr=self.alpha))
+      self.target = load_model('network_model.h5', compile=False)
+
+  def save_model(self):
+    self.target.save('network_model.h5')
 
   def get_action(self, state):
     """Return None if there's no possible action.
@@ -233,8 +247,8 @@ class Agent:
     """From network output for 'state' it finds the best actions.
        From intersection of net best actions and 'possbile_actions' we random one action to be returned.
        If there isn't common actions, None is returned"""
-    prediction = self.online.predict(state.to_net_input().reshape(1, -1))[0]
-    best_actions_index = np.where(prediction == np.max(prediction))[0]
+    prediction = self.target.predict(state.to_net_input())
+    best_actions_index = np.where(prediction == np.max(prediction.reshape(-1)))[1]
     best_actions = [map_index_to_action[b_a_i] for b_a_i in best_actions_index]
     intersection = [v for v in best_actions if v in possible_actions]
     if not intersection:  # empty
@@ -249,10 +263,10 @@ class Agent:
     self.target_update_counter += 1
     self.decrease_epsilon()
     samples = random.sample(self.memory, self.batch_size)
-    batch, action, next_batch, reward, is_term_or_goal = self.create_batch(samples)
+    batch, action, next_batch, reward, is_term_or_eaten = self.create_batch(samples)
 
     max_next = self.get_max_target_predictions(next_batch)
-    expected = self.get_expected_output(is_term_or_goal, reward, max_next)
+    expected = self.get_expected_output(is_term_or_eaten, reward, max_next)
     predictions = self.online.predict(batch)
 
     """Prediction in 's' is updated at 'a' output by expected value.
@@ -264,47 +278,47 @@ class Agent:
       predictions[i][action_index] = 0
 
     """Training of online network"""
-    self.online.fit(batch, predictions, iterations=50, alpha=self.alpha)
+    self.online.fit(batch, predictions, epochs=20, verbose=0)
     """Update of target network (copy weights from online)"""
     if self.target_update_counter >= self.target_update_period:
       self.target.set_weights(self.online.get_weights())
       self.target_update_counter = 0
 
   def create_batch(self, samples):
-    """Return separated state, action, reward, next state and is_terminal or is_goal from given 'samples'"""
+    """Return separated state, action, reward, next state and is_terminal or is_eaten from given 'samples'"""
     zipped_samples = list(zip(*samples))
     batch = [v.to_net_input() for v in zipped_samples[0]]
     action = zipped_samples[1]
     reward = zipped_samples[2]
     next_batch = [v.to_net_input() for v in zipped_samples[3]]
     is_term_or_goal = zipped_samples[4]
-    return np.array(batch), np.array(action), np.array(next_batch), \
-           np.array(reward), np.array(is_term_or_goal)
+    return np.array(batch).reshape(self.batch_size, -1), np.array(action), \
+           np.array(next_batch).reshape(self.batch_size, -1), np.array(reward), np.array(is_term_or_goal)
 
   def get_max_target_predictions(self, batch):
-    """Returns values of best net predictions"""
+    """Returns values of best target net predictions"""
     predictions = self.target.predict(batch)
     max_values = np.max(predictions, axis=1)
     return max_values
 
-  def get_expected_output(self, is_terminal, reward, max_values):
+  def get_expected_output(self, is_term_or_eaten, reward, max_values):
     """Return calculated expected value of specific action for network training"""
     expected_output = []
     for i in range(self.batch_size):
-      if is_terminal[i]:  expected_output.append(reward[i])
-      else:               expected_output.append(reward[i] + self.gamma*max_values[i])
+      if is_term_or_eaten[i]:  expected_output.append(reward[i])
+      else:                    expected_output.append(reward[i] + self.gamma*max_values[i])
     return expected_output
 
   def step(self):
     """Based on get_action() choose next_state and update snake's direction.
-       Append tuple (s, a, r, s', t||g) to memory. Update agent."""
+       Append tuple (s, a, r, s', t||e) to memory. Update agent."""
     action = self.get_action(self.current_state)
     assert action is not None
 
     next_state = self.mdp.get_next_state(self.current_state, action)
     reward = self.mdp.get_reward(self.current_state, action)
     self.memory.append((self.current_state, action, reward, next_state,\
-                        self.mdp.is_terminal(next_state) or next_state.is_goal))  # is_terminal or is_goal
+                        self.mdp.is_terminal(next_state) or next_state.is_eaten))  # is_terminal or is_eaten
 
     if self.training_counter >= self.training_period and self.train:
       self.training_counter = 0
@@ -333,6 +347,3 @@ class Agent:
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay
     else: self.epsilon = self.epsilon_min
-
-  def save(self):
-    self.target.save()

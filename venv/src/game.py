@@ -2,26 +2,27 @@ import pygame
 import snake
 from learning import Agent, MDP
 from collections import deque
+import numpy as np
 
 class Game:
-  def __init__(self, surface_size=(800, 800), train=False, episodes=100, alpha=0.01, epsilon=0.8, gamma=0.9, acc_threshold=0.75, speed=15, cell_size=(20, 20)):
+  def __init__(self, surface_size=(800, 800), train=False, episodes=100, alpha=0.001, gamma=0.9, epsilon=0.8, accuracy=0.2, speed=15):
     self.fruit_color = (46, 200, 50)
     self.board_color = self.font_color = (204, 209, 209)
     self.background_color = (33, 47, 61)
     self.snake_color = (24, 26, 70)
-    self.surface_size = (surface_size[0] + 200, surface_size[1])
-    self.cell_size = cell_size
+    self.surface_size = (surface_size[0], surface_size[1] + 75)
+    self.cell_size = (30, 30)
     self.speed = speed
 
-    self.side_size = (200, surface_size[1])
-    self.board_size_window = (surface_size[0] - 2 * cell_size[0], surface_size[1] - 2 * cell_size[1])
-    self.board_size = (self.board_size_window[1] // cell_size[0], self.board_size_window[1] // cell_size[1])
-    self.fruit_radius = cell_size[0] // 2
+    self.side_size = (surface_size[0], 75)
+    self.board_size_window = (surface_size[0] - 2 * self.cell_size[0], surface_size[1] - 2 * self.cell_size[1])
+    self.board_size = (self.board_size_window[1] // self.cell_size[0], self.board_size_window[1] // self.cell_size[1])
+    self.fruit_radius = self.cell_size[0] // 2
 
     self.game_running = True
     self.agent = Agent(MDP(self.board_size), train, episodes, gamma, alpha, epsilon, self.board_size[0]*self.board_size[1])
     self.episode = 0
-    self.acc_threshold = acc_threshold
+    self.accuracy = accuracy
 
     pygame.display.init()
     pygame.font.init()
@@ -30,11 +31,11 @@ class Game:
     self.screen = pygame.display.set_mode(self.surface_size)
     self.screen.fill(self.background_color)
     self.board = pygame.Surface(self.board_size_window)
-    self.side_bar_size = (surface_size[0], 0)
+    self.side_bar_pos = (0, surface_size[1])
     self.side_bar = pygame.Surface(self.side_size)
     self.side_bar.fill(self.background_color)
-    self.screen.blit(self.side_bar, self.side_bar_size)
-    self.font = pygame.font.SysFont("comicsans", cell_size[0] + 10)
+    self.screen.blit(self.side_bar, self.side_bar_pos)
+    self.font = pygame.font.SysFont("comicsans", self.cell_size[0])
 
   def map_coords(self, coords):
     """Return mapped 'coords' to pixel coords"""
@@ -43,40 +44,42 @@ class Game:
   def start(self):
     """Start game, contain game loop"""
     steps = 0
-    last_three_scores = deque([0, 0, 0], maxlen=3)
+    last_scores = deque([0, 0, 0, 0], maxlen=4)
     while self.game_running:
       for event in pygame.event.get():
         if event.type == pygame.QUIT:
           self.game_running = False
-
+      """Display snake if it is last episode or flag is set"""
       if not self.agent.train:
         self.refresh(steps)
-
+      """Make a reinforcement learning step"""
       self.agent.step()
       steps += 1
-
+      """Check if it's end of episode and handle it"""
       if self.agent.is_terminal() or steps >= self.agent.max_steps:
-        last_three_scores.append(self.agent.get_score())
-        if self.is_game_over(last_three_scores, steps):
+        last_scores.append(self.agent.get_score())
+        if self.is_game_over(last_scores, steps):
           self.game_running = False
           break
         else:
           self.reset(steps)
           steps = 0
           continue
-
+      """Reset steps if agent reached fruit"""
       if self.agent.is_goal():
         steps = 0
-
+      """Make snake move"""
       self.agent.mdp.move_snake()
 
-    self.agent.save()
+    if self.agent.train:
+      self.agent.save_model()
 
-  def is_game_over(self, last_three_scores, steps):
-    """Return true if all episodes is played, it is training or accuracy threshold is reached"""
+  def is_game_over(self, last_scores, steps):
     print(f"Ep. {self.episode}    steps {steps}   score {self.agent.get_score()}    epsilon {self.agent.epsilon}")
-    return self.episode >= self.agent.episodes or not self.agent.train \
-           or sum(last_three_scores) >= (self.board_size[0] * self.board_size[1]) * self.acc_threshold
+    size = self.board_size[0]*self.board_size[1]
+    if np.mean(last_scores)/size >= self.accuracy or self.episode >= self.agent.episodes - 1:
+      return True
+    else: False
 
   def reset(self, steps):
     """"Reset episode"""
@@ -92,21 +95,13 @@ class Game:
 
     self.side_bar.fill(self.background_color)
     score_text = self.font.render(f"Score: {self.agent.mdp.snake.eaten_fruits}", 1, self.font_color)
-    episode_text = self.font.render(f"Episode: {self.episode}/{self.agent.episodes}", 1, self.font_color)
-    alpha_text = self.font.render(f"Alpha: {self.agent.alpha:.3f}", 1, self.font_color)
-    epsilon_text = self.font.render(f"Epsilon: {self.agent.epsilon:.3f}", 1, self.font_color)
-    train_text = self.font.render(f"Train: {self.agent.train}", 1, self.font_color)
     steps_text = self.font.render(f"Steps: {steps}/{self.agent.max_steps}", 1, self.font_color)
 
     padding = self.cell_size[0]
-    interspace = self.surface_size[1]//7
-    self.side_bar.blit(score_text, (padding, padding))
-    self.side_bar.blit(episode_text, (padding, padding + interspace))
-    self.side_bar.blit(alpha_text, (padding, padding + 2 * interspace))
-    self.side_bar.blit(epsilon_text, (padding, padding + 3 * interspace))
-    self.side_bar.blit(train_text, (padding, padding + 4 * interspace))
-    self.side_bar.blit(steps_text, (padding, padding + 5 * interspace))
-    self.screen.blit(self.side_bar, self.side_bar_size)
+    center = self.surface_size[0] // 2
+    self.side_bar.blit(score_text, (center - 40, 0))
+    self.side_bar.blit(steps_text, (center - 50, padding))
+    self.screen.blit(self.side_bar, self.side_bar_pos)
 
     pygame.display.update()
     self.clock.tick(self.speed)
